@@ -134,9 +134,21 @@ impl Tracker {
                 let place = (guidance.level() >= 5)
                     .then(|| self.graph.place(here, mem[blob + 5], mem[blob + 6]));
                 let whole = place.map(|p| (&self.graph, p));
-                let (piece, core) =
+                let (nearest, core) =
                     routes(&self.known, whole, here, &booths, &pieces, guidance.core());
-                guidance.set_route(piece);
+                // Tab or Y switches between the three nearest (#51).
+                let ends: Vec<u16> = nearest
+                    .iter()
+                    .map(|r| r.last().map_or(here, |s| s.room))
+                    .collect();
+                let (which, chosen) =
+                    choose(&ends, guidance.chosen_piece(), guidance.take_switch());
+                let count = u8::try_from(ends.len()).unwrap_or(u8::MAX);
+                guidance.set_piece_choice(
+                    chosen,
+                    (u8::try_from(which).map_or(0, |w| w + 1).min(count), count),
+                );
+                guidance.set_route(nearest.get(which).cloned());
                 guidance.set_core_route(core);
                 guidance.set_pieces(&pieces);
             }
@@ -146,8 +158,13 @@ impl Tracker {
     }
 }
 
-/// The two routes from `here` (#44): to the nearest room holding a missing
-/// piece, and to the core room while a piece it needs is carried (#44,
+/// How many of the nearest missing pieces the piece route can switch
+/// between (#51).
+const NEAREST: usize = 3;
+
+/// The routes from `here` (#44): to the rooms holding a missing piece, the
+/// nearest [`NEAREST`] of them nearest first, each to a different room
+/// (#51); and to the core room while a piece it needs is carried (#44,
 /// decision 5), `None` otherwise or when there is no way. Over the
 /// connections `known`, or with `whole`, over the whole map from that place
 /// (#10). A teleport between two of `booths` counts as one step.
@@ -158,18 +175,41 @@ fn routes(
     booths: &[u16],
     pieces: &RoomSet,
     core: &[Hole],
-) -> (Option<Vec<Step>>, Option<Vec<Step>>) {
+) -> (Vec<Vec<Step>>, Option<Vec<Step>>) {
     let search = |targets: &RoomSet| match whole {
         Some((graph, place)) => graph.route(place, booths, targets),
         None => known.route(here, booths, targets, CORE_ROOM),
     };
-    let piece = search(pieces);
+    // The nearest, then the nearest with its room left out, and again.
+    let mut left = pieces.clone();
+    let mut piece = Vec::new();
+    while piece.len() < NEAREST
+        && let Some(route) = search(&left)
+    {
+        left.set(route.last().map_or(here, |s| s.room), false);
+        piece.push(route);
+    }
     let core = core.iter().any(|h| h.carried).then(|| {
         let mut room = RoomSet::default();
         room.set(CORE_ROOM, true);
         search(&room)
     });
     (piece, core.flatten())
+}
+
+/// Which of the nearest pieces' rooms `ends` the piece route leads to, and
+/// the room to remember as chosen (#51). The room `chosen` stays chosen
+/// while it is among them; gone, the route goes back to the nearest. A
+/// `switch` moves to the next, and from the last back to the nearest,
+/// which is no choice: the route then follows whichever piece is nearest.
+fn choose(ends: &[u16], chosen: Option<u16>, switch: bool) -> (usize, Option<u16>) {
+    let found = chosen.and_then(|c| ends.iter().position(|&e| e == c));
+    if switch && ends.len() > 1 {
+        let next = (found.unwrap_or(0) + 1) % ends.len();
+        (next, (next != 0).then(|| ends[next]))
+    } else {
+        (found.unwrap_or(0), found.and(chosen))
+    }
 }
 
 /// The core's nine holes as the column draws them: each one's graphic from
@@ -328,7 +368,7 @@ mod tests {
             room,
             teleport: false,
         };
-        let piece = Some(vec![step(196)]);
+        let piece = vec![vec![step(196)]];
         let core = Some(vec![step(198), step(CORE_ROOM)]);
 
         let none_carried = routes(&known, None, 197, &[], &pieces, &[hole(false), hole(false)]);
@@ -342,7 +382,7 @@ mod tests {
         let no_way = routes(&known, None, 197, &[], &far, &[hole(true)]);
         assert_eq!(
             no_way,
-            (None, core),
+            (vec![], core),
             "no way to a piece leaves the core route"
         );
     }
@@ -379,13 +419,95 @@ mod tests {
         );
         assert_eq!(
             piece,
-            Some(vec![Step {
+            [vec![Step {
                 room: 1,
                 teleport: false
-            }])
+            }]]
         );
         let (walked_only, _) = routes(&Known::default(), None, 0, &[], &pieces, &[]);
-        assert_eq!(walked_only, None, "level 4 knows no way");
+        assert!(walked_only.is_empty(), "level 4 knows no way");
+    }
+
+    #[test]
+    fn the_three_nearest_pieces_nearest_first() {
+        // Walked 100 → 101 → 102 → 103 → 104, a piece in each room past 100.
+        let mut known = Known::default();
+        for r in 100..104 {
+            known.walked(r, r + 1);
+        }
+        let mut pieces = RoomSet::default();
+        for r in 101..=104 {
+            pieces.set(r, true);
+        }
+        let (nearest, _) = routes(&known, None, 100, &[], &pieces, &[]);
+        let ends: Vec<u16> = nearest.iter().map(|r| r.last().unwrap().room).collect();
+        assert_eq!(ends, [101, 102, 103], "three, the fourth left out");
+    }
+
+    #[test]
+    fn a_switch_goes_through_the_three_and_back_to_the_nearest() {
+        let ends = [101, 102, 103];
+        assert_eq!(choose(&ends, None, false), (0, None), "the nearest");
+        assert_eq!(choose(&ends, None, true), (1, Some(102)));
+        assert_eq!(choose(&ends, Some(102), false), (1, Some(102)), "kept");
+        assert_eq!(choose(&ends, Some(102), true), (2, Some(103)));
+        assert_eq!(choose(&ends, Some(103), true), (0, None), "round again");
+        // Blob walked on: the chosen piece is nearest now, and still chosen.
+        assert_eq!(choose(&[102, 101, 103], Some(102), false), (0, Some(102)));
+    }
+
+    #[test]
+    fn a_chosen_piece_gone_from_the_three_goes_back_to_the_nearest() {
+        // Picked up, or no longer among the three nearest.
+        assert_eq!(choose(&[101, 103, 104], Some(102), false), (0, None));
+        assert_eq!(choose(&[101, 103, 104], Some(102), true), (1, Some(103)));
+        assert_eq!(
+            choose(&[101], None, true),
+            (0, None),
+            "one: nothing to switch to"
+        );
+        assert_eq!(choose(&[], Some(102), true), (0, None), "none");
+    }
+
+    #[test]
+    fn the_piece_route_follows_the_choice_and_a_new_game_forgets_it() {
+        let mut t = Tracker::default();
+        let mut g = Guidance::default();
+        g.set_level(4);
+        for r in 100..104 {
+            t.known.walked(r, r + 1);
+        }
+        let mut mem = vec![0u8; 0x10000];
+        mem[usize::from(at::ROOM)..usize::from(at::ROOM) + 2]
+            .copy_from_slice(&100u16.to_le_bytes());
+        // Three open holes wanting graphic 30, and a piece of it in 101, 102 and 103.
+        let core = usize::from(at::CORE_SLOTS);
+        mem[core..core + 9].fill(0x80 | 30);
+        for (i, room) in [101u16, 102, 103].into_iter().enumerate() {
+            let a = usize::from(at::ITEMS) + i * 4;
+            mem[a..a + 4].copy_from_slice(&[
+                0,
+                12 | ((room >> 8) as u8).rotate_right(1),
+                room as u8,
+                30,
+            ]);
+        }
+        t.follow(&mem, routine::MAIN_LOOP, &mut g);
+        let end = |g: &Guidance| g.route().and_then(|r| r.last()).map(|s| s.room);
+        t.publish(&mem, &mut g);
+        assert_eq!((end(&g), g.piece_choice()), (Some(101), (1, 3)));
+        g.switch_piece();
+        t.publish(&mem, &mut g);
+        assert_eq!((end(&g), g.piece_choice()), (Some(102), (2, 3)));
+        t.publish(&mem, &mut g);
+        assert_eq!(end(&g), Some(102), "a switch is taken once");
+        g.new_game();
+        t.publish(&mem, &mut g);
+        assert_eq!(
+            (end(&g), g.piece_choice()),
+            (Some(101), (1, 3)),
+            "a new game forgets"
+        );
     }
 
     #[test]
