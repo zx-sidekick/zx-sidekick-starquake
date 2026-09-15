@@ -111,6 +111,14 @@ pub struct Guidance {
     /// The route to the core while a piece it needs is carried (#44);
     /// `None` otherwise or when there is none.
     core_route: Option<Vec<Step>>,
+    /// The room of the missing piece the player switched the route to with
+    /// Tab or Y (#51), or `None` while it leads to the nearest.
+    chosen_piece: Option<u16>,
+    /// A switch asked for and not yet taken by the tracker.
+    switch_piece: bool,
+    /// Which of the nearest missing pieces the route leads to, and of how
+    /// many: (1, 3) for the nearest of three, (0, 0) with none.
+    piece_choice: (u8, u8),
     /// Bumped on every change, so a watcher can tell something changed.
     version: u64,
 }
@@ -255,6 +263,43 @@ impl Guidance {
     pub fn set_core_route(&mut self, route: Option<Vec<Step>>) {
         if self.core_route != route {
             self.core_route = route;
+            self.version += 1;
+        }
+    }
+
+    /// Asks for the piece route to switch to the next of the nearest missing
+    /// pieces (#51), which the tracker takes on its next frame.
+    pub fn switch_piece(&mut self) {
+        self.switch_piece = true;
+    }
+
+    /// Whether a switch was asked for since the last call.
+    pub fn take_switch(&mut self) -> bool {
+        std::mem::take(&mut self.switch_piece)
+    }
+
+    /// The room of the piece the route was switched to, if any.
+    pub fn chosen_piece(&self) -> Option<u16> {
+        self.chosen_piece
+    }
+
+    /// Which of how many nearest missing pieces the route leads to, 1-based.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the panel shows it once the mockup is approved (#51)"
+        )
+    )]
+    pub fn piece_choice(&self) -> (u8, u8) {
+        self.piece_choice
+    }
+
+    /// Takes the piece chosen, and which of how many, if they have changed.
+    pub fn set_piece_choice(&mut self, chosen: Option<u16>, which: (u8, u8)) {
+        if (self.chosen_piece, self.piece_choice) != (chosen, which) {
+            self.chosen_piece = chosen;
+            self.piece_choice = which;
             self.version += 1;
         }
     }
@@ -479,6 +524,8 @@ impl Guidance {
             highest: self.level,
             training: self.training,
         };
+        self.chosen_piece = None;
+        self.switch_piece = false;
         self.version += 1;
     }
 }
