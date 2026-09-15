@@ -137,6 +137,13 @@ pub mod at {
     /// and length, then a (graphic, matched) pair for each item. A security
     /// door asks for three chips, the pyramid for two (#33, #49).
     pub const CODE: u16 = 0xD5F4;
+    /// The system variable `CHARS`: 256 less than the address of the
+    /// font's space, as the ROM's printing reads it.
+    pub const CHARS: u16 = 0x5C36;
+    /// The game's own font, which `CHARS` points 256 bytes below during
+    /// play: 96 letters of 8 × 8 pixels from the space, a row to a byte
+    /// (#49).
+    pub const FONT: u16 = 0xADD4;
     /// Why the room was entered, as [`super::entry`] names the values.
     pub const ENTRY_REASON: u16 = 0xD2C4;
     /// The rooms not yet visited this game: 512 bits, most significant
@@ -241,6 +248,13 @@ pub const BOOTH_MARKER: u8 = 0x0D;
 
 /// The marker a security door's tile leaves in its room.
 pub const DOOR_MARKER: u8 = 0x00;
+
+/// The game's font from `mem` (the machine's whole 64K): 96 letters of
+/// eight bytes each, from the space. `None` when `mem` is too short.
+#[must_use]
+pub fn font(mem: &[u8]) -> Option<&[u8]> {
+    mem.get(usize::from(at::FONT)..usize::from(at::FONT) + 96 * 8)
+}
 
 /// The three chips a security door's screen asked for, by graphic, from the
 /// code in `mem` (the machine's whole 64K), when the last screen was a
@@ -410,6 +424,17 @@ pub fn missing_piece_rooms(core_slots: &[u8; 9], items: &[Item]) -> crate::map::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_font_is_96_letters_from_its_address() {
+        let mut mem = vec![0u8; 0x10000];
+        let a = usize::from(at::FONT) + (usize::from(b'A') - 0x20) * 8;
+        mem[a] = 0x3C;
+        let font = font(&mem).unwrap();
+        assert_eq!(font.len(), 768);
+        assert_eq!(font[(usize::from(b'A') - 0x20) * 8], 0x3C);
+        assert_eq!(super::font(&mem[..0xB000]), None, "cut short");
+    }
 
     #[test]
     fn a_door_code_is_three_chips_and_a_pyramid_code_is_none() {

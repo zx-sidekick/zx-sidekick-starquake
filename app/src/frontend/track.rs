@@ -5,7 +5,7 @@
 
 use sidekick::map::{Graph, Known, Place, RoomSet, Step};
 use sidekick::starquake::{
-    CORE_ROOM, Item, SeenTeleporter, at, door_code, entry, graphic, hole, items_and_core,
+    CORE_ROOM, Item, SeenTeleporter, at, door_code, entry, font, graphic, hole, items_and_core,
     missing_piece_rooms, routine, teleporter_code,
 };
 
@@ -133,6 +133,9 @@ impl Tracker {
         }
         if next == Scene::Play {
             guidance.new_game();
+            if let Some(font) = font(mem) {
+                guidance.set_font(font);
+            }
         }
         guidance.set_playing(next == Scene::Play);
         self.scene = next;
@@ -340,6 +343,18 @@ mod tests {
         assert_eq!(g.door_codes().len(), 1, "no code kept for 300");
         t.follow(&mem, routine::NEW_GAME, &mut g);
         assert!(g.door_codes().is_empty(), "a new game forgets them");
+    }
+
+    #[test]
+    fn the_game_s_font_is_read_once_play_starts() {
+        let mut t = Tracker::default();
+        let mut g = Guidance::default();
+        let mut mem = vec![0u8; 0x10000];
+        mem[usize::from(at::FONT)] = 0x7E;
+        t.follow(&mem, routine::MENU, &mut g);
+        assert_eq!(g.font(), None, "not on the title screen");
+        t.follow(&mem, routine::MAIN_LOOP, &mut g);
+        assert_eq!(g.font().map(|f| (f.len(), f[0])), Some((768, 0x7E)));
     }
 
     #[test]
